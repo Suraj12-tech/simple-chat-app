@@ -1,77 +1,135 @@
 package project.ai_chat.service;
 
-
-
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.RestTemplate;
 import project.ai_chat.model.ChatRequest;
 import project.ai_chat.model.ChatResponse;
 import project.ai_chat.model.MessageDto;
-import org.springframework.http.HttpHeaders;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-
 @Service
 public class ChatService {
 
-  //application.properties se API key read karta hai
-    @Value("${openai.api.key}")
-    private String apikey;
+    @Value("${gemini.api.key}")
+    private String apiKey;
+
+    @Value("${gemini.model:gemini-2.5-flash}")
+    private String model;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
-    private static final String OPENAI_URL ="https://api.openai.com/v1/chat/completions";
+    private static final String GEMINI_URL_TEMPLATE =
+            "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent";
 
-    public ChatResponse chat (ChatRequest chatRequest){
-
-        // Step 1: Messages list banao
-        // Pehle system message daalo (AI ka behavior define karta hai)
-        List<Map<String,String>> messages = new ArrayList<>();
-        messages.add(Map.of(
-                "role", "system",
-                "content", "You are a helpful and friendly AI assistant. Keep answers concise."
-        ));
-
-        // Frontend se aaye saare messages add karo
-        for(MessageDto msg : chatRequest.getMessages()){
-            messages.add(Map.of("role",msg.getRole(),"content",msg.getContent()));
+    public ChatResponse chat(ChatRequest chatRequest) {
+        if (!StringUtils.hasText(apiKey)) {
+            throw new IllegalStateException("GEMINI_API_KEY set nahi hai.");
         }
 
-        // Step 2: OpenAI ke liye request body banao
-        Map<String,Object> requestBody = new HashMap<>();
-        requestBody.put("model","gpt-3.5-turbo");
-        requestBody.put("messages",messages);
-        requestBody.put("max_token",500);
+        List<Map<String, Object>> contents = buildContents(chatRequest); //<------------ baad me --------
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("systemInstruction", Map.of(
+                "parts", List.of(Map.of(
+                        "text", "You are a helpful and friendly AI assistant. Keep answers concise."
+                ))
+        ));
+        requestBody.put("contents", contents);
+        requestBody.put("generationConfig", Map.of(
+                "maxOutputTokens", 500,
+                "temperature", 0.7
+        ));
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(apikey);
+        headers.set("x-goog-api-key", apiKey);
 
-        HttpEntity<Map<String,Object>> entity = new  HttpEntity<>(requestBody,headers);
+        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(requestBody, headers);
+        ResponseEntity<Map> response = restTemplate.postForEntity(geminiUrl(), entity, Map.class);
 
-        // Step 4: OpenAI API call karo
-        ResponseEntity<Map>reponse = restTemplate.postForEntity(
-                OPENAI_URL,entity,Map.class
-        );
-
-        List<Map<String,Object>> choices = (List<Map<String,Object>>) reponse.getBody().get("choices");
-
-        Map<String,Object> message = (Map<String,Object>) choices.get(0).get("message");
-
-        String reply = (String) message.get("content");
-
-        return new ChatResponse(reply);
-
+        return new ChatResponse(extractReply(response.getBody()));
     }
 
+    private String geminiUrl() {
+        return String.format(GEMINI_URL_TEMPLATE, model);
+    }
 
+    private List<Map<String, Object>> buildContents(ChatRequest chatRequest) {
+        List<Map<String, Object>> contents = new ArrayList<>();
 
+        if (chatRequest.getMessages() == null) {
+            return contents;
+        }
+
+        boolean sawUserMessage = false;
+        for (MessageDto msg : chatRequest.getMessages()) {
+            if (!StringUtils.hasText(msg.getRole()) || !StringUtils.hasText(msg.getContent())) {
+                continue;
+            }
+
+            String role = msg.getRole();
+//            if (!role.equals("user") && !role.equals("assistant")) {
+//                continue;
+//            }
+
+            String geminiRole = role.equals("assistant") ? "model" : "user";
+            if (role.equals("user")) {
+                sawUserMessage = true;
+            }
+
+            if (sawUserMessage) {
+                contents.add(Map.of(
+                        "role", geminiRole,
+                        "parts", List.of(Map.of("text", msg.getContent()))
+                ));
+            }
+        }
+
+        if (contents.isEmpty()) {
+            throw new IllegalArgumentException("Message empty hai.");
+        }
+
+        return contents;
+    }
+
+    private String extractReply(Map responseBody) {
+        if (responseBody == null || !(responseBody.get("candidates") instanceof List<?> candidates)
+                || candidates.isEmpty()) {
+            throw new IllegalStateException("Gemini se invalid response aaya.");
+        }
+
+        Object firstCandidate = candidates.getFirst();
+        if (!(firstCandidate instanceof Map<?, ?> candidate)
+                || !(candidate.get("content") instanceof Map<?, ?> content)
+                || !(content.get("parts") instanceof List<?> parts)) {
+            Object finishReason = firstCandidate instanceof Map<?, ?> candidateMap
+                    ? candidateMap.get("finishReason")
+                    : null;
+            throw new IllegalStateException("Gemini se text response nahi aaya."
+                    + (finishReason == null ? "" : " Finish reason: " + finishReason));
+        }
+
+        StringBuilder reply = new StringBuilder();
+        for (Object part : parts) {
+            if (part instanceof Map<?, ?> partMap && partMap.get("text") instanceof String text) {
+                reply.append(text);
+            }
+        }
+
+        if (!StringUtils.hasText(reply)) {
+            throw new IllegalStateException("Gemini se empty response aaya.");
+        }
+
+        return reply.toString();
+    }
 }

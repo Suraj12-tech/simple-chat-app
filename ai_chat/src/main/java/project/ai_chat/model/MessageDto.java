@@ -7,6 +7,6 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 @NoArgsConstructor
 public class MessageDto {
-  private String content;  // "user" ya "assistant"
-  private String role;    // actual message text
+  private String role;    // "user" ya "assistant"
+  private String content; // actual message text
 }
