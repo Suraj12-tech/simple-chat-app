@@ -25,11 +25,17 @@ public class Chat_Controller {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ChatResponse> handleChatError(Exception exception) {
-        String message = exception.getMessage() == null
-                ? "Backend error aaya."
-                : exception.getMessage();
+
+        String message = exception.getMessage();
+
+        if (message == null) {
+            message = "Backend error aaya.";
+        }
+
+        ChatResponse response = new ChatResponse(message);
+
         return ResponseEntity
                 .status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(new ChatResponse(message));
+                .body(response);
     }
 }
